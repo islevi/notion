@@ -1,0 +1,1715 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import argparse
+import configparser
+import warnings
+import random
+import re
+import string
+import logging
+import copy
+import shutil
+import datetime
+import time
+import signal
+#import configobj
+from subprocess import call, run, Popen, PIPE, STDOUT
+
+# implement tb_incdir
+def get_tb_incdir(**kwargs):
+    tb_incdir_lst = kwargs['$TB_INCDIR'].split('\n')
+    tb_incdir = "".join(tb_incdir_lst)
+
+    for k,v in kwargs.items():
+        tb_incdir = tb_incdir.replace(k,v)
+
+    return tb_incdir
+
+# implement vlog_option with inline config
+def get_vlog_option(**kwargs):
+    vlog_op = ""
+    if 'NAND_MODE' in kwargs:
+        nand_def = kwargs['NAND_MODE'] + '_define'
+        vlog_op = vlog_op + kwargs[nand_def]
+    
+    return vlog_op
+
+# prerun - 1. clean up data files under ./sim 2. generate run/ dir 3. execute cmd in prerun section 
+def prerun(args, **kwargs):
+    global seed_array_size
+
+    if args.make == 1:  
+        makedir=os.getcwd()+"/../../common/comp_data_gen"
+        os.chdir(makedir)
+        call('rm -rf build', shell=True)
+        call('mkdir build', shell=True)
+        #call('cd build', shell=True)
+        makedir=os.getcwd()+"/../../common/comp_data_gen/build"
+        os.chdir(makedir)
+        call('cmake ..', shell=True)
+        call('make -j4', shell=True)
+        simdir=os.getcwd()+"/../../../"+module+"/sim"
+        os.chdir(simdir)
+      
+        if module=='dcs':
+            makedir=os.getcwd()+"/../../common/r2c_ali"
+            os.chdir(makedir)
+            call('make', shell=True)
+            simdir=os.getcwd()+"/../../"+module+"/sim"
+            os.chdir(simdir)
+   
+    if args.seperatecompile == 1:  
+        k=0
+        for testlist in args.testlists:
+            lst_parser = configparser.SafeConfigParser()
+            lst_parser.optionxform = str
+            lst_parser.read(testlist)
+            base = lst_parser._sections['base']
+            tests_list = lst_parser.sections()
+            tests_list.remove('base')
+            if not args.tests:
+                for item in tests_list:
+                    testname=item
+                    logger.debug("testlist: " +  str(testlist))
+                    logger.debug("testname: " +  str(testname))
+                    test = lst_parser._sections[item]
+                    merge_sections(test, **base)
+                    seed = 0 if not args.seeds else args.seeds.pop(0)
+                    if 'rpt' in test:
+                        rpt_num=int(test['rpt'])
+                    else:
+                        rpt_num=1
+                    for test_iter in range(rpt_num):
+                        rand_seed = random.randrange(0, 1000000) if seed==0 else seed
+                        testdir = os.getcwd()+'/run/{}_{}_rpt{}_{}'.format(testlist, testname, test_iter, rand_seed)
+                        seed_array[k]=rand_seed
+                        test_name_array[k]='./run/{}_{}_rpt{}_{}/'.format(testlist, testname, test_iter, rand_seed)
+                        k=k+1
+                        if not os.path.exists(testdir):
+                            os.makedirs(testdir)
+                        else:
+                            if args.clean == 1:   
+                                shutil.rmtree(testdir)
+                                os.makedirs(testdir)
+                        os.chdir(testdir)
+                        if args.debug_mode == 0:   
+                            call('rm -rf libraries AN* simv*', shell=True)
+                            call('rm -f *.dat', shell=True)
+                            call('rm -f *.txt*', shell=True)
+                            call('rm -f *.hex', shell=True)
+                            call('rm -f *.ver', shell=True)
+                            call('rm -f vsim.do', shell=True)
+                        else:
+                            call('rm -rf libraries AN* simv*', shell=True)
+                            call('rm -f *.ver', shell=True)
+                            call('rm -f vsim.do', shell=True)
+                        for kk in kwargs:
+                            cmds = kwargs[kk].split('\n')
+                            for cmd in cmds:
+                                call(cmd, shell=True)
+                                logger.info("prerun: execute cmd: " +  cmd)
+                        if(args.offset):
+                            gen_offset(args.offset)
+                        
+                        change_back_dir()
+                seed_array_size=k
+                logger.debug("seed_array_size: " +  str(seed_array_size))
+            else:
+                for test_id in args.tests:
+                    testname = 'test_{}'.format(int(test_id))
+                    test = lst_parser._sections[testname]
+                    merge_sections(test, **base)
+                    rpt_num = 1 if not args.rpts else args.rpts.pop(0)
+                    logger.debug("prerun rpt_num="+str(rpt_num))
+                    for test_iter in range(rpt_num):
+                        seed = 0 if not args.seeds else args.seeds.pop(0)
+                        logger.debug("prerun seed="+str(seed))
+                        rand_seed = random.randrange(0, 1000000) if seed==0 else seed
+                        seed_array[k]=rand_seed
+                        test_name_array[k]='./run/{}_{}_rpt{}_{}/'.format(testlist, testname, test_iter, rand_seed)
+                        k=k+1
+                        
+                        testdir = os.getcwd()+'/run/{}_{}_rpt{}_{}/'.format(testlist, testname, test_iter, rand_seed)
+                        if not os.path.exists(testdir):
+                            os.makedirs(testdir)
+                        else:
+                            if args.clean == 1:   
+                                shutil.rmtree(testdir)
+                                os.makedirs(testdir)
+                        os.chdir(testdir)
+                        if args.debug_mode == 0:   
+                            call('rm -rf libraries AN* simv*', shell=True)
+                            call('rm -f *.dat', shell=True)
+                            call('rm -f *.txt*', shell=True)
+                            call('rm -f *.hex', shell=True)
+                            call('rm -f *.ver', shell=True)
+                            call('rm -f vsim.do', shell=True)
+                        else:
+                            call('rm -rf libraries AN* simv*', shell=True)
+                            call('rm -f *.ver', shell=True)
+                            call('rm -f vsim.do', shell=True)
+                        for kk in kwargs:
+                            cmds = kwargs[kk].split('\n')
+                            for cmd in cmds:
+                                call(cmd, shell=True)
+                                logger.info("prerun: execute cmd: " +  cmd)
+                        if(args.offset):
+                            gen_offset(args.offset)
+                        change_back_dir()
+                seed_array_size=k
+                logger.debug("seed_array_size: " +  str(seed_array_size))
+    else:
+        # clean up
+        if args.debug_mode == 0:   
+            call('rm -rf libraries AN* simv*', shell=True)
+            call('rm -f *.dat', shell=True)
+            call('rm -f *.txt*', shell=True)
+            call('rm -f *.hex', shell=True)
+            call('rm -f *.ver', shell=True)
+            call('rm -f vsim.do', shell=True)
+        else:
+            call('rm -rf libraries AN* simv*', shell=True)
+            call('rm -f *.ver', shell=True)
+            call('rm -f vsim.do', shell=True)
+
+
+        # generate run directory 
+        if not os.path.exists("./run"):
+            os.makedirs("./run")
+
+        # execute cmd 
+        for k in kwargs:
+            cmds = kwargs[k].split('\n')
+            for cmd in cmds:
+                call(cmd, shell=True)
+                logger.info("prerun: execute cmd: " +  cmd)
+        if(args.offset):
+            gen_offset(args.offset)
+   
+
+def ensure_lib(lib):
+    if not os.path.isdir(lib):
+        logger.debug("ensure_lib: lib: " +  lib)
+        call('vlib {}'.format(lib), shell=True)
+def change_test_dir(kk):
+    testdir=os.getcwd()+"/"+test_name_array[kk]
+    logger.debug("testdir: " + testdir)
+    os.chdir(testdir)
+    logger.debug(os.getcwd())
+def change_back_dir():
+    testdir=os.getcwd()+"/../../"
+    os.chdir(testdir)
+    logger.debug(os.getcwd())
+    
+# Create compilation libraries
+def compile_lib(args, **kwargs):
+    global seed_array_size
+    cmds = kwargs['cmd'].split('\n')
+    for cmd in cmds:
+        if 'ensure_lib' in cmd:  # call ensure_lib
+            if args.seperatecompile == 1: 
+                logger.debug("compile_lib: seed_array_size: " +  str(seed_array_size))
+                for kk in range(seed_array_size):
+                    cmd_tmp = re.sub(r"\s+"," ", cmd).split(' ')
+                    change_test_dir(kk)
+                    ensure_lib(cmd_tmp[1])
+                    change_back_dir()
+            else:
+                cmd_tmp = re.sub(r"\s+"," ", cmd).split(' ')
+                ensure_lib(cmd_tmp[1])
+            logger.info("compile_lib: execute cmd: " +  cmd_tmp[1])
+        elif 'vmap' in cmd:
+            if args.seperatecompile == 1: 
+                for kk in range(seed_array_size):
+                    change_test_dir(kk)
+                    call(cmd, shell=True)
+                    logger.info("compile_lib vmap: execute cmd: " +  cmd)
+                    change_back_dir()
+            else:
+                call(cmd, shell=True)
+                logger.info("compile_lib vmap: execute cmd: " +  cmd)
+
+# compile nand
+def compile_nand(args, nand, param, nand_files):
+    global seed_array_size
+    print("Compiling DUT - nand ... ",nand)
+    cmds = nand_files[nand].split('\n')
+    for cmd in cmds:
+        for k,v in param.items():
+            cmd = cmd.replace(k,v)
+        if args.seperatecompile == 1: 
+            for kk in range(seed_array_size):
+                change_test_dir(kk)
+                logger.info("compile_nand: execute cmd: " +  cmd)
+                if args.toolname == 'vcs':
+                    call(vcs_compile_cmd + " -full64 +v2k  " + cmd, shell=True)
+                else:
+                    call("vlog -mfcu " + cmd, shell=True)
+                change_back_dir()
+        else:
+            logger.info("compile_nand: execute cmd: " +  cmd)
+            if args.toolname == 'vcs':
+                call(vcs_compile_cmd + " -full64 +v2k  " + cmd, shell=True)
+            else:
+                call("vlog -mfcu " + cmd, shell=True)
+
+# generic compile function, used to compile TB and DUT
+def compile_func(args,param, section):
+    global seed_array_size
+    for com, com_content in section.items():
+        cmds = section[com].split('\n')
+        # call shell command and output compile.log
+        for cmd in cmds:
+            log = open('compile.log','a+')
+            for k,v in param.items():
+                cmd = cmd.replace(k,v)
+            if args.seperatecompile == 1: 
+                for kk in range(seed_array_size):
+                    change_test_dir(kk)
+                    logger.info("compile_func: execute cmd: " +  cmd)
+                    proc=Popen(cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                    for line in proc.stdout:
+                        sys.stdout.write(line.decode('utf-8'))
+                        log.write(line.decode('utf-8'))
+                    proc.wait()
+                    change_back_dir()
+            else:
+                logger.info("compile_func: execute cmd: " +  cmd)
+                proc=Popen(cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                for line in proc.stdout:
+                    sys.stdout.write(line.decode('utf-8'))
+                    log.write(line.decode('utf-8'))
+                proc.wait()
+
+# generic compile function, used to compile TB and DUT
+def compile_sim_func(args, param, section, extra_define, com_arg, **sim_sec):
+    for com, com_content in section.items():
+        cmds = section[com].split('\n')
+        logger.debug("compile section k: " + com)
+        logger.debug("compile section v: " + str(cmds))
+        # call shell command and output compile.log
+        if  args.toolname == 'vcs':
+            compile_tool = vcs_compile_cmd + ' -full64 +v2k -sverilog'
+        else:
+            compile_tool = 'vlog -incr'
+        for cmd in cmds:
+            log = open('compile.log','a+')
+            for k,v in param.items():
+                logger.debug("default section k: " + k)
+                logger.debug("default section v: " + v)
+                logger.info("before replace: execute cmd: " +  cmd)
+                cmd = cmd.replace(k,v)
+                logger.info("after replace: execute cmd: " +  cmd)
+            if args.seperatecompile == 1: 
+                for kk in range(seed_array_size):
+                    change_test_dir(kk)
+                    if args.toolname == 'vcs' and "tb" in com:
+                        logger.debug("com: " + com)
+                        proc=Popen("{} -kdb -ntb_opts uvm".format(compile_tool), stdout=PIPE, stderr=STDOUT, shell=True)
+                        logger.debug("vlogan compile cmd: " + compile_tool + " -kdb -ntb_opts uvm")
+                        for line in proc.stdout:
+                            sys.stdout.write(line.decode('utf-8'))
+                            log.write(line.decode('utf-8'))
+                        proc.wait()
+                    if extra_define != None:
+                        cmd = cmd + ' {}'.format(extra_define)
+                    if args.dump == True and args.waveform_viewer == 'vd':
+                        fsdb_do_f = open("fsdbdump.svh", "w")
+                        fsdb_do_f.write("initial begin\n$fsdbDumpfile(\"test.fsdb\");\n")
+                        fsdb_do_f.write("$fsdbDumpon;\n");
+                        fsdb_do_f.write("$fsdbDumpvars(\"+all\");\n");
+                        fsdb_do_f.write("$fsdbDumpMDA(0,"+module+"_top_tb.u_dut);\n");
+                        if  args.dumpctrl == None:
+                           fsdb_do_f.write("$fsdbDumpvars(0,"+module+"_top_tb.u_dut);\n");
+                        else:
+                           fsdb_do_f.write("`include \"{}\";\n".format(args.dumpctrl));
+                        fsdb_do_f.write("end\n");
+                        fsdb_do_f.close()
+                        proc=Popen("{} +delay_mode_zero +define+FSDB ".format(compile_tool) + cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                    else:
+                        proc=Popen("{} +delay_mode_zero ".format(compile_tool) + cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                    logger.info("compile cmd: " + compile_tool + cmd)
+                    for line in proc.stdout:
+                        sys.stdout.write(line.decode('utf-8'))
+                        log.write(line.decode('utf-8'))
+                    proc.wait()
+                    if args.toolname == 'vcs' and "tb" in com:
+                        elab(args,com_arg)
+                    else:
+                        if args.toolname == 'mti' and "tb" in com:
+                            mti_vopt(**sim_sec)
+                    change_back_dir()
+            else:
+                if args.toolname == 'vcs' and "tb" in com:
+                    proc=Popen("{} -kdb -ntb_opts uvm".format(compile_tool), stdout=PIPE, stderr=STDOUT, shell=True)
+                    logger.info("vlogan compile cmd: " + compile_tool + " -kdb -ntb_opts uvm")
+                    for line in proc.stdout:
+                        sys.stdout.write(line.decode('utf-8'))
+                        log.write(line.decode('utf-8'))
+                    proc.wait()
+                if extra_define != None:
+                    cmd = cmd + ' {}'.format(extra_define)
+                if args.dump == True and args.waveform_viewer == 'vd':
+                    fsdb_do_f = open("fsdbdump.svh", "w")
+                    fsdb_do_f.write("initial begin\n$fsdbDumpfile(\"test.fsdb\");\n")
+                    fsdb_do_f.write("$fsdbDumpon;\n");
+                    fsdb_do_f.write("$fsdbDumpvars(\"+all\");\n");
+                    fsdb_do_f.write("$fsdbDumpMDA(0,"+module+"_top_tb.u_dut);\n");
+                    if  args.dumpctrl == None:
+                        fsdb_do_f.write("$fsdbDumpvars(0,"+module+"_top_tb.u_dut);\n");
+                    else:
+                        fsdb_do_f.write("`include \"{}\";\n".format(args.dumpctrl));
+                    fsdb_do_f.write("end\n");
+                    fsdb_do_f.close()
+                    proc=Popen("{} +delay_mode_zero +define+FSDB ".format(compile_tool) + cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                else:
+                    proc=Popen("{} +delay_mode_zero ".format(compile_tool) + cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+                logger.info("compile cmd: " + compile_tool + cmd)
+                for line in proc.stdout:
+                    sys.stdout.write(line.decode('utf-8'))
+                    log.write(line.decode('utf-8'))
+                proc.wait() 
+                if args.toolname == 'vcs' and "tb" in com:
+                    elab(args,com_arg)
+                else:
+                    if args.toolname == 'mti' and "tb" in com:
+                        mti_vopt(**sim_sec)
+
+# prepare common cmd arg
+def prepare_sim_arg(args, **kwargs):
+    global seed_array_size
+    vsim_opt      = kwargs['vsim_opt']
+    work_lib      = kwargs['work_lib']
+    run_top       = kwargs['run_top']
+    if args.toolname == 'mti':
+        run_top_opt   = kwargs['run_top_opt']
+        vopt_opt      = kwargs['vopt_opt']
+
+    if args.seperatecompile == 1: 
+        for kk in range(seed_array_size):
+            vsim_do_f = open(test_name_array[kk]+"vsim.do", "w")
+            if args.tclscr != None:
+                vsim_do_f.write('source ' + args.tclscr + ';\n')
+            if args.toolname == 'mti':
+                if args.dump == True:
+                    if  args.waveform_viewer == 'ms':
+                        if  args.dumpctrl != None:
+                            dump_control = ' source ' + args.dumpctrl
+                        else:
+                            dump_control = ' log -r /*'
+                        vsim_do_f.write('set WildcardFilter "Variable Constant Generic Parameter SpecParam Assertion Cover Endpoint ScVariable CellInternal ImmediateAssert VHDLFile";{};\n'.format(dump_control))
+                    elif args.waveform_viewer == 'vz':
+                        if  args.dumpctrl != None:
+                            dump_control = ' -qwavedb=+signal=' + args.dumpctrl
+                        else:
+                            dump_control = ' -qwavedb=+signal'
+                        if  args.dumpmem == 1:
+                            dump_mem = '+memory '
+                        else:
+                            dump_mem = ' '
+                        vsim_opt = dump_control + dump_mem + vsim_opt
+                    elif args.waveform_viewer == 'vd':
+                        vsim_opt = ' -pli /cad2/synopsys/verdi/U-2023.03-SP1-1/share/PLI/MODELSIM/linux64/novas_fli.so -no_autoacc ' + vsim_opt
+                if args.xprop == 1:
+                    vsim_do_f.write('xprop assertlimit 10\n')
+                    vsim_do_f.write('xprop disable\n')
+                    vsim_do_f.write('run 100ns\n')
+                    vsim_do_f.write('xprop enable\n')
+                    vsim_do_f.write('run -all\n')
+                else:
+                    vsim_do_f.write('run -all\n')
+            # FSDB waveform for VCS
+            elif args.toolname == 'vcs':
+                if args.dump == True:
+                    vsim_do_f.write('run {};\n'.format(args.waveformstart))
+                    if  args.waveform_viewer == 'vd':
+                        vsim_do_f.write('call \$fsdbDumpfile(\"test.fsdb\");\n')
+                        if  args.dumpctrl == None:
+                            vsim_do_f.write('call \$fsdbDumpvars("+all");\n')
+                        else: 
+                            vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+                        vsim_do_f.write('call \$fsdbDumpon;\n')
+                    elif  args.waveform_viewer == 'vp':
+                        vsim_do_f.write('call \$vcdplusfile(\"test.vpd\");\n')
+                        if  args.dumpctrl == None:
+                            vsim_do_f.write('call \$vcdpluson;\n')
+                        else: 
+                            vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+                    elif  args.waveform_viewer == 'vc':
+                        vsim_do_f.write('call \$dumpfile(\"test.vcd\");\n')
+                        vsim_do_f.write('call \$dumpvars;\n')
+                        if  args.dumpctrl == None:
+                            vsim_do_f.write('call \$dumpon;\n')
+                        else: 
+                            vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+                vsim_do_f.write('run;');
+
+            vsim_do_f.close()
+    else:
+        vsim_do_f = open("vsim.do", "w")
+        if args.tclscr != None:
+            vsim_do_f.write('source ' + args.tclscr + ';\n')
+        if args.toolname == 'mti':
+            if args.dump == True:
+                if  args.waveform_viewer == 'ms':
+                    if  args.dumpctrl != None:
+                        dump_control = ' source ' + args.dumpctrl
+                    else:
+                        dump_control = ' log -r /*'
+                    vsim_do_f.write('set WildcardFilter "Variable Constant Generic Parameter SpecParam Assertion Cover Endpoint ScVariable CellInternal ImmediateAssert VHDLFile";{};\n'.format(dump_control))
+                elif args.waveform_viewer == 'vz':
+                    if  args.dumpctrl != None:
+                        dump_control = ' -qwavedb=+signal=' + args.dumpctrl
+                    else:
+                        dump_control = ' -qwavedb=+signal'
+                    if  args.dumpmem == 1:
+                        dump_mem = '+memory '
+                    else:
+                        dump_mem = ' '
+                    vsim_opt = dump_control + dump_mem + vsim_opt
+                elif args.waveform_viewer == 'vd':
+                    vsim_opt = ' -pli /cad2/synopsys/verdi/U-2023.03-SP1-1/share/PLI/MODELSIM/linux64/novas_fli.so -no_autoacc ' + vsim_opt
+            if args.xprop == 1:
+                vsim_do_f.write('xprop assertlimit 10\n')
+                vsim_do_f.write('xprop disable\n')
+                vsim_do_f.write('run 100ns\n')
+                vsim_do_f.write('xprop enable\n')
+                vsim_do_f.write('run -all\n')
+            else:
+                vsim_do_f.write('run -all\n')
+        # FSDB waveform for VCS
+        elif args.toolname == 'vcs':
+            if args.dump == True:
+                vsim_do_f.write('run {};\n'.format(args.waveformstart))
+                if  args.waveform_viewer == 'vd':
+                    vsim_do_f.write('call \$fsdbDumpfile(\"test.fsdb\");\n')
+                    if  args.dumpctrl == None:
+                        vsim_do_f.write('call \$fsdbDumpvars("+all");\n')
+                    else: 
+                        vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+                    vsim_do_f.write('call \$fsdbDumpon;\n')
+                elif  args.waveform_viewer == 'vp':
+                    vsim_do_f.write('call \$vcdplusfile(\"test.vpd\");\n')
+                    if  args.dumpctrl == None:
+                        vsim_do_f.write('call \$vcdpluson;\n')
+                    else: 
+                        vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+                elif  args.waveform_viewer == 'vc':
+                    vsim_do_f.write('call \$dumpfile(\"test.vcd\");\n')
+                    vsim_do_f.write('call \$dumpvars;\n')
+                    if  args.dumpctrl == None:
+                        vsim_do_f.write('call \$dumpon;\n')
+                    else: 
+                        vsim_do_f.write('source {};\n'.format(args.dumpctrl))
+            vsim_do_f.write('run;');
+        vsim_do_f.close()
+        
+    if args.initmem == 1:
+        vsim_opt = vsim_opt + ' -voptargs="+initmem+0" '
+
+    if args.toolname == 'vcs':
+        vsim_opt = vsim_opt + ' '
+    else:
+        vsim_opt = vsim_opt + ' -do vsim.do '
+
+    if args.cov:
+        if 'cov_opt' in kwargs.keys():
+            vsim_opt = vsim_opt + ' {} '.format(kwargs['cov_opt'])
+        else:
+            if args.toolname == 'vcs':
+                vsim_opt = vsim_opt + ' -cm line+tgl+assert+branch+cond+fsm '
+
+    if args.toolname == 'mti':
+        return [vsim_opt, work_lib, run_top, run_top_opt]
+    else:
+        return [vsim_opt, work_lib, run_top]
+def gen_offset(offset):
+    offset_f = open("stop_resume_offset.txt","w")
+    for off in offset:
+        logger.info("off ="+str(off))
+        offset_f.write(str(off)+'\n')
+    offset_f.close()
+   
+# merge base section and test section
+def merge_sections(test_sect, **base_sect):
+    for k, v in base_sect.items():
+        if k in test_sect.keys():
+            test_sect[k] = v + "\n" + test_sect[k]  # append the common args from base_sect
+            logger.debug("new test_sect value: " + test_sect[k])
+        else:
+            test_sect[k] = v
+            logger.debug("appended k: " + k + " v: " + v)
+
+def elab(args,com_arg):
+    if args.profile_cpu != None:
+        vcs_cmd = 'vcs -simprofile -kdb -debug_access+r'
+    else:
+        vcs_cmd = 'vcs -kdb -debug_access+r'
+    vcs_cmd = vcs_cmd + ' -full64 +vcs+lic+wait -ntb_opts uvm-1.1 -l vcs.log -lca {run_top} +error+100'.format(run_top=com_arg[2])
+    vcs_cmd = vcs_cmd + ' -P ${VERDI_HOME}/share/PLI/VCS/linux64/novas.tab'
+    vcs_cmd = vcs_cmd + ' ${VERDI_HOME}/share/PLI/VCS/linux64/pli.a'
+    vcs_cmd = vcs_cmd + ' {vsim_opt}'.format(vsim_opt=com_arg[0])
+    logger.info("VCS elab cmd : "+vcs_cmd)
+    call(vcs_cmd, shell=True)
+
+###Mentor Edit###  
+def mti_vopt(**kwargs):
+    vopt_opt	 = kwargs['vopt_opt']
+    work_lib      = kwargs['work_lib']
+    run_top       = kwargs['run_top']
+    run_top_opt   = kwargs['run_top_opt']
+
+    if args.dump == True and args.toolname == 'mti':
+       if  args.waveform_viewer == 'ms':
+          if  args.dumpctrl != None:
+             dump_control = ' source ' + args.dumpctrl
+          else:
+             dump_control = ' log -r /*'
+          vsim_do_f.write('set WildcardFilter "Variable Constant Generic Parameter SpecParam Assertion Cover Endpoint ScVariable CellInternal ImmediateAssert VHDLFile";{};\n'.format(dump_control))
+          vopt_opt = vopt_opt + ' +acc=npr'
+       elif args.waveform_viewer == 'vz':
+          vopt_opt =  vopt_opt + ' -debug -designfile design.bin'
+       elif args.waveform_viewer == 'vd':
+          vopt_opt =  vopt_opt + ' -access=r+/.'   
+
+    vopt_cmd 	 = 'vopt -64' 
+    vopt_cmd      = vopt_cmd + ' ' + work_lib +' ' +run_top 
+    vopt_cmd      = vopt_cmd + ' -o'
+    vopt_cmd      = vopt_cmd + ' ' + run_top_opt +' ' + vopt_opt
+    vopt_cmd 	 = vopt_cmd + ' -l vopt.log' 
+    logger.info("Questa Vopt cmd : "+vopt_cmd) 
+    call(vopt_cmd, shell=True)
+
+def wait_end(args,req):
+    global job_l
+    global job_l_start_time
+    global job_l_start_time_no
+    global job_l_jc
+    global job_l_index
+    global job_l_testlist
+    global job_l_testname
+    global job_l_total_test_num
+    global job_l_simulation_times
+    global job_l_logname
+    global job_l_runtime_str
+    global job_l_wait_time_str
+    global total_waittime
+    global job_l_ind
+
+    tot = len(job_l)
+    if(req == 0): return
+    logger.info("Waiting for %d job(s) to complete"%req)
+    while (len(job_l) > tot-req):
+        job_len=len(job_l)
+        job_l_tmp=copy.deepcopy(job_l)
+        for k in range(0,job_len):
+            i=job_l_tmp[k]
+            #logger.info("k="+str(k))
+            #logger.info("i="+str(i))
+            #p=Popen("qstat -j " + i, stdout=PIPE, universal_newlines=True, shell=True)
+            #logger.info("job_l_ind="+str(job_l_ind))
+            for j in range(0,job_l_ind):
+                #logger.info("j="+str(j))
+                if i == job_l_jc[j]:
+                    job_l_index=j
+                    break
+                j+=1
+            #logger.info("job_l_jc[job_l_index]="+str(job_l_jc[job_l_index]))
+            #logger.info("job_l_index="+str(job_l_index))
+            p=Popen("qstat |grep " + i, stdout=PIPE, universal_newlines=True, shell=True)
+            out = p.stdout.read().strip().split('\n')[0].split()
+            #print (out, len(out))
+            #if len(out) == 1 : job_l.remove(i)
+            #if len(out) == 0 : 
+            if i not in out: 
+                logger.info("removed "+str(i))
+                job_l.remove(i)
+                job_l_end_time[job_l_index]=time.time();
+                if (job_l_end_time[job_l_index]-job_l_start_time[job_l_index]) > (3600*24):
+                    runtime="{:.3f}".format((job_l_end_time[job_l_index]-job_l_start_time[job_l_index])/(3600*24))
+                    runtime_str=str(runtime)+' day'
+                elif (job_l_end_time[job_l_index]-job_l_start_time[job_l_index]) > 3600:
+                    runtime="{:.3f}".format((job_l_end_time[job_l_index]-job_l_start_time[job_l_index])/3600)
+                    runtime_str=str(runtime)+' hour'
+                else:
+                    runtime="{:.3f}".format((job_l_end_time[job_l_index]-job_l_start_time[job_l_index])/60)
+                    runtime_str=str(runtime)+' min'
+                job_l_runtime_str[job_l_index]=runtime_str
+
+                if job_l_wait_start_time[job_l_index] ==0:
+                    waittime_str='0'
+                else:
+                    total_waittime+=(job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index])
+                    if (job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index]) > (3600*24):
+                        waittime="{:.3f}".format((job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index])/(3600*24))
+                        waittime_str=str(waittime)+' day'
+                    elif (job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index]) > 3600:
+                        waittime="{:.3f}".format((job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index])/3600)
+                        waittime_str=str(waittime)+' hour'
+                    else:
+                        waittime="{:.3f}".format((job_l_start_time[job_l_index]-job_l_wait_start_time[job_l_index])/60)
+                        waittime_str=str(waittime)+' min'
+                job_l_wait_time_str[job_l_index]=waittime_str
+
+
+                regresslog.write('{:31}  {:8}  {:<10}  {:<10}  {:40} {:10} {:10}'.format(job_l_testlist[job_l_index],job_l_testname[job_l_index],job_l_total_test_num[job_l_index],job_l_simulation_times[job_l_index],job_l_logname[job_l_index],job_l_wait_time_str[job_l_index],job_l_runtime_str[job_l_index]))
+                regresslog.write('\n')
+
+                job_l_index+=1
+            else: 
+                if 'qw' in out[4]: 
+                    logger.info("Job %s waiting in queue"%i)
+                    if job_l_wait_start_time_no[job_l_index]==0:
+                        job_l_wait_start_time[job_l_index]=time.time();
+                        #logger.info("jc="+str(i)+",job_l_index="+str(job_l_index)+",job_l_wait_start_time=" + str(job_l_wait_start_time[job_l_index]))
+                    job_l_wait_start_time_no[job_l_index]+=1;
+                    job_l_start_time[job_l_index]=time.time();
+                    #logger.info("jc="+str(i)+",job_l_index="+str(job_l_index)+",job_l_wait_start_time_no=" + str(job_l_wait_start_time_no[job_l_index]))
+                else: 
+                    logger.info("Job %s in progress"%i)
+                    if job_l_start_time_no[job_l_index]==0:
+                        job_l_start_time[job_l_index]=time.time();
+                        #logger.info("jc="+str(i)+",job_l_index="+str(job_l_index)+",job_l_start_time=" + str(job_l_start_time[job_l_index]))
+                    job_l_start_time_no[job_l_index]+=1;
+                    #logger.info("jc="+str(i)+",job_l_index="+str(job_l_index)+",job_l_start_time_no=" + str(job_l_start_time_no[job_l_index]))
+            logger.info("sleep 5")
+            time.sleep(5)
+        if(len(job_l)==0):
+            break
+        else:
+            logger.info("sleep 30")
+            time.sleep(30)
+
+def cleanup(signal,frame):
+    global job_l
+    logger.info("Aborting pending jobs...")
+    if len(job_l) > 0:
+        logger.debug("Cmd : qdel "+' '.join(job_l))
+        p=Popen("qdel " + ' '.join(job_l), stdout=PIPE, universal_newlines=True, shell=True)
+        p.communicate()
+    logger.info("Done cleaning up...")
+    sys.exit(0)
+
+def simulation(testlist ,testname, test_iter, args, rpt_num, seed, verb, rerun, error_array, com_arg, **kwargs):
+    global job_l
+    global simulation_times
+    global seed_array_size
+    global total_test_num
+    global job_l_jc
+    global job_l_index
+    global job_l_testlist
+    global job_l_testname
+    global job_l_total_test_num
+    global job_l_simulation_times
+    global job_l_logname
+    global job_l_runtime_str
+    global job_l_wait_time_str
+    global job_l_ind
+
+    sub_cmd = 'qsub -V -cwd -b y %s ' %(args.gargs)
+    total_test_num=total_test_num+1
+    #for test_iter in range(rpt_num):
+    if args.toolname == 'vcs':
+        if args.profile_cpu != None:
+            if args.dump == True:
+                sim_cmd = 'simv -simprofile {profile_type} -full64 +vcs+initmem+0 +vcs+lic+wait+fsdb+delta -top {run_top} -ucli -do vsim.do'.format(profile_type=args.profile_type,run_top=com_arg[2])
+            else:
+                sim_cmd = 'simv -simprofile {profile_type} -full64 +vcs+initmem+0 +vcs+lic+wait+fsdb+delta -top {run_top}'.format(profile_type=args.profile_type,run_top=com_arg[2])
+        else:
+            if args.dump == True:
+                sim_cmd = 'simv -full64 +vcs+initmem+0 +vcs+lic+wait+fsdb+delta -top {run_top} -ucli -do vsim.do'.format(run_top=com_arg[2])
+            else:
+                sim_cmd = 'simv -full64 +vcs+initmem+0 +vcs+lic+wait+fsdb+delta -top {run_top}'.format(run_top=com_arg[2])
+        sim_cmd = sim_cmd + ' -P ${VERDI_HOME}/share/PLI/VCS/linux64/novas.tab'
+        sim_cmd = sim_cmd + ' ${VERDI_HOME}/share/PLI/VCS/linux64/novas.tab'
+    else:      
+        sim_cmd = 'vsim -batch {work_lib} {run_top_opt} '.format(work_lib=com_arg[1], run_top_opt=com_arg[3])
+    if args.ge:
+        logger.debug("no need store starttime")
+    else:
+        starttime=time.time()
+    rand_seed=seed_array[simulation_times]
+    if seed_array_size == 0:
+        rand_seed = seed
+    simulation_times=simulation_times+1
+    if rerun==1:
+        if error_array[test_iter]==0:
+           return 1
+        else:
+            logger.debug("test_iter "+str(test_iter)+" run error,enter rerun mode")
+    if args.seperate == 1:
+        testdir = os.getcwd()+'/run/{}_{}_rpt{}_{}'.format(testlist, testname, test_iter, rand_seed)
+        if not os.path.exists(testdir):
+            os.makedirs(testdir)
+        os.chdir(testdir)
+        if module == "dcs":  
+            cmd="cp -r ../../raw_data ."
+            call(cmd, shell=True)
+            cmd="cp -r ../../cac_data ."
+            call(cmd, shell=True)
+        if args.seperatecompile == 0:   
+            if args.toolname == 'vcs':
+                if os.path.exists("simv.daidir"):
+                    call('rm -rf ./simv.daidir', shell=True)
+                cmd="ln -s ../../simv.daidir ."
+                call(cmd, shell=True)
+                if os.path.exists("simv"):
+                    call('rm -rf ./simv', shell=True)
+                cmd="ln -s ../../simv ."
+                call(cmd, shell=True)
+                cmd="ln -s ../../vsim.do ."
+                call(cmd, shell=True)
+            else:
+                if os.path.exists("libraries"):
+                    call('rm -rf ./libraries', shell=True)
+                #cmd="cp -r ../../libraries ."
+                cmd="ln -s ../../libraries ."
+                call(cmd, shell=True)
+                cmd="cp -r ../../vsim.do ."
+                call(cmd, shell=True)
+                cmd="cp -r ../../modelsim.ini ."
+                call(cmd, shell=True)
+                f=open("modelsim.ini","r")
+                f_new=open("modelsim_new.ini","w")
+                for line in f:
+                    if 'work = ./libraries/work/' in line: 
+                        line = re.sub(r"./libraries","./../../libraries", line)
+                    f_new.write(line)
+                f.close()
+                f_new.close()
+                cmd="mv modelsim_new.ini modelsim.ini"
+                call(cmd, shell=True)
+
+
+    sim_cmd = '{} {vsim_opt} '.format(sim_cmd, vsim_opt=com_arg[0])
+
+    sim_cmd = sim_cmd + '+UVM_TESTNAME={} '.format(kwargs['test_base'])
+
+    if 'test_seq' in kwargs.keys():
+        base_seqs = kwargs['base_seq'].split(' ')
+        test_seqs = kwargs['test_seq'].split(' ')
+        for t_seq, b_seq in zip(test_seqs, base_seqs):
+            sim_cmd = sim_cmd + '+uvm_set_type_override={},{} '.format(b_seq, t_seq)
+
+    if module == "dcs":
+        if args.debug_mode == 1:
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,debug_mode,1"
+        if args.mkdir_build == 0:
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,mkdir_build,0"
+        if args.sys_clk == "800m":
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,1250"
+        elif args.sys_clk == "600m":
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,1667"
+        elif args.sys_clk == "400m":
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,2500"
+        if(args.offset):
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,offset,1"
+        if args.performance==1:
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ddr_bm_sel,0"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,inbuff_rr_mode,2"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,performance_mode,1"
+        if args.delay==1:
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_awvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_awvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_wvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_wvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_bready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_bready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_arvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_arvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_rready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_rready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_awready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_awready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_wready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_wready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_bvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_bvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_arready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_arready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_rvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_rvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_intra_rvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_intra_rvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_awvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_awvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_wvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_wvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_bready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_bready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_arvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_arvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_rready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_rready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_awready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_awready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_wready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_wready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_bvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_bvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_arready_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_arready_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_rvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_rvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_intra_rvalid_delay,100"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_intra_rvalid_delay,1"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,simulation_time,50000000"
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,wait_time_after_simulation,1000000"
+        if(args.ratio):
+            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,"+args.ratio
+        if(args.ns_unit==0):
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ns_unit,0"
+        elif(args.ns_unit==1):
+            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ns_unit,1"
+    if 'test_cfg_int' in kwargs.keys():
+        cfgs_int = kwargs['test_cfg_int'].split('\n')
+
+        for cfg in cfgs_int:
+            if rpt_num > 1:
+                if testlist == "performance_test_list" or testlist == "performance1_test_list" : 
+                    if ",rand_size," in cfg:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,rand_size,0"
+                        if test_iter <10:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[0],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[1],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[2],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[4],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[6],65536"#64k
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[0],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[1],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[2],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[4],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[6],131072"#128k
+                            
+                        if test_iter % 10 == 0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,1"
+                        elif test_iter % 10 == 1:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,1.1"
+                        elif test_iter % 10 == 2:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,1.5"
+                        elif test_iter % 10 == 3:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,1.8"
+                        elif test_iter % 10 == 4:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,2"
+                        elif test_iter % 10 == 5:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,2.2"
+                        elif test_iter % 10 == 6:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,2.5"
+                        elif test_iter % 10 == 7:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,3"
+                        elif test_iter % 10 == 8:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,0"#all 0
+                        elif test_iter % 10 == 9:
+                            sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,ratio,999"#all 1
+                    elif "pkt_num" in cfg:
+                        if args.more_pkt_num!=0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ssid_msgid,1"
+                            if "pkt_num[0]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[0],"+str(args.more_pkt_num)
+                            elif "pkt_num[1]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[1],"+str(args.more_pkt_num)
+                            elif "pkt_num[2]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[2],"+str(args.more_pkt_num)
+                            elif "pkt_num[3]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[3],"+str(args.more_pkt_num)
+                            elif "pkt_num[4]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[4],"+str(args.more_pkt_num)
+                            elif "pkt_num[5]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[5],"+str(args.more_pkt_num)
+                            elif "pkt_num[6]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[6],"+str(args.more_pkt_num)
+                            elif "pkt_num[7]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[7],"+str(args.more_pkt_num)
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                    else:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                elif testlist == "ip_script_performance_test_list": 
+                    if ",rand_size," in cfg:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,rand_size,0"
+                        if test_iter <1:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[0],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[1],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[2],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[4],65536"#64k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[6],65536"#64k
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[0],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[1],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[2],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[4],131072"#128k
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,size[6],131072"#128k
+                    elif "pkt_num" in cfg:
+                        if args.more_pkt_num!=0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ssid_msgid,1"
+                            if "pkt_num[0]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[0],"+str(args.more_pkt_num)
+                            elif "pkt_num[1]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[1],"+str(args.more_pkt_num)
+                            elif "pkt_num[2]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[2],"+str(args.more_pkt_num)
+                            elif "pkt_num[3]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[3],"+str(args.more_pkt_num)
+                            elif "pkt_num[4]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[4],"+str(args.more_pkt_num)
+                            elif "pkt_num[5]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[5],"+str(args.more_pkt_num)
+                            elif "pkt_num[6]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[6],"+str(args.more_pkt_num)
+                            elif "pkt_num[7]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[7],"+str(args.more_pkt_num)
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                    else:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                else:
+                    if "ddr_bm_sel" in cfg:
+                        if test_iter % 3 == 0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ddr_bm_sel,0"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,1250"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,inbuff_rr_mode,2"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,performance_mode,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ssid_msgid,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_awvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_awvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_wvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_wvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_bready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_bready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_arvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_arvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_max_rready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,fis_min_rready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_awready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_awready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_wready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_wready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_bvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_bvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_arready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_arready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_rvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_rvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_max_intra_rvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sdma_min_intra_rvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_awvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_awvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_wvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_wvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_bready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_bready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_arvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_arvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_max_rready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_min_rready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_awready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_awready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_wready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_wready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_bvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_bvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_arready_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_arready_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_rvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_rvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_max_intra_rvalid_delay,100"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,"+module+"_msg_sla_min_intra_rvalid_delay,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,crc_mode,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,simulation_time,50000000"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,wait_time_after_simulation,1000000"
+                        elif test_iter % 3 == 1:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ddr_bm_sel,0"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,1667"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,inbuff_rr_mode,1"
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ddr_bm_sel,1"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,sys_clk_period,2500"
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,inbuff_rr_mode,1"
+                    elif "performance_mode,1" in cfg:
+                        if test_iter % 3 == 2:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,performance_mode,0"
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,performance_mode,1"
+                    elif "rand_windowsize," in cfg:
+                        if test_iter % 3 == 0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,rand_windowsize,1"
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,rand_windowsize,0"
+                    elif "pkt_num" in cfg:
+                        if args.more_pkt_num!=0:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ssid_msgid,1"
+                            if "pkt_num[0]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[0],"+str(args.more_pkt_num)
+                            elif "pkt_num[1]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[1],"+str(args.more_pkt_num)
+                            elif "pkt_num[2]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[2],"+str(args.more_pkt_num)
+                            elif "pkt_num[3]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[3],"+str(args.more_pkt_num)
+                            elif "pkt_num[4]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[4],"+str(args.more_pkt_num)
+                            elif "pkt_num[5]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[5],"+str(args.more_pkt_num)
+                            elif "pkt_num[6]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[6],"+str(args.more_pkt_num)
+                            elif "pkt_num[7]" in cfg:
+                                sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[7],"+str(args.more_pkt_num)
+                        else:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                    elif "initmem,1" in cfg:
+                        sim_cmd = sim_cmd + ' -voptargs="+initmem+0"'
+                    else:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+
+            else:
+                if "pkt_num" in cfg:
+                    if args.more_pkt_num!=0:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ssid_msgid,1"
+                        if "pkt_num[0]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[0],"+str(args.more_pkt_num)
+                        elif "pkt_num[1]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[1],"+str(args.more_pkt_num)
+                        elif "pkt_num[2]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[2],"+str(args.more_pkt_num)
+                        elif "pkt_num[3]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[3],"+str(args.more_pkt_num)
+                        elif "pkt_num[4]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[4],"+str(args.more_pkt_num)
+                        elif "pkt_num[5]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[5],"+str(args.more_pkt_num)
+                        elif "pkt_num[6]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[6],"+str(args.more_pkt_num)
+                        elif "pkt_num[7]" in cfg:
+                            sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,pkt_num[7],"+str(args.more_pkt_num)
+                    else:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                elif "ddr_bm_sel,1" in cfg:
+                    if args.performance==1:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+"uvm_test_top."+module+"_cfg,ddr_bm_sel,0"
+                    else:
+                        sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+                elif "initmem,1" in cfg:
+                    sim_cmd = sim_cmd + ' -voptargs="+initmem+0"'
+                else:
+                    sim_cmd = sim_cmd + " +uvm_set_config_int="+cfg
+      
+    if 'test_cfg_str' in kwargs.keys():
+        cfgs_str = kwargs['test_cfg_str'].split('\n')
+        for cfg in cfgs_str:
+            sim_cmd = sim_cmd + " +uvm_set_config_string="+cfg
+
+    #verbosity, seed
+    if args.toolname == 'vcs':
+        sim_cmd = sim_cmd + ' +UVM_VERBOSITY=UVM_{}'.format(verb.upper()) + ' +ntb_random_seed={}'.format(rand_seed)
+    else:
+        sim_cmd = sim_cmd + ' +UVM_VERBOSITY=UVM_{}'.format(verb.upper()) + ' -sv_seed {}'.format(rand_seed)
+    #sim_cmd = sim_cmd + ' +UVM_MAX_QUIT_COUNT=2 +UVM_PHASE_TRACE'
+    if not args.quit_count:
+        logger.info("no quit_count,use default")
+    else:
+        sim_cmd = sim_cmd + ' +UVM_MAX_QUIT_COUNT={}'.format(args.quit_count)
+
+
+    # logfile, waveform
+    sim_wave = "" 
+    if args.outfile != None:
+        if args.seperate == 1:
+            logfile = ' -l {}_{}_rpt{}_{}.log'.format(args.outfile,testname, test_iter, rand_seed)
+            loginfo = '{}_{}_rpt{}_{}'.format(args.outfile,testname, test_iter, rand_seed)
+            waveformfile = '{}_{}_rpt{}_{}'.format(args.outfile,testname, test_iter, rand_seed)
+        else:
+            logfile = ' -l run/{}_{}_rpt{}_{}.log'.format(args.outfile,testname, test_iter, rand_seed)
+            loginfo = '{}_{}_rpt{}_{}'.format(args.outfile,testname, test_iter, rand_seed)
+            waveformfile = 'run/{}_{}_rpt{}_{}'.format(args.outfile,testname, test_iter, rand_seed)
+        logger.debug("to logfile: " + logfile)
+        if args.dump == 1:
+            if args.waveform_viewer == 'ms':
+                sim_wave =  '-wlf {wavefile}.wlf '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vz':
+                sim_wave = '-qwavedb=+wavefile={wavefile}.db '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vd':
+                sim_wave = '+fsdbfile+{wavefile}.fsdb '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vp':
+                sim_wave = '+vpdfile+{wavefile}.vpd '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vc':
+                sim_wave = '-vcd {wavefile}.vcd '.format(wavefile=waveformfile)
+    elif 'test_name' in kwargs.keys():
+        if args.seperate == 1:
+            #logfile = ' -l {}_{}_rpt{}_{}.log'.format(kwargs['test_name'],testname, test_iter, rand_seed)
+            logfile = ' -l {}_{}_rpt{}_{}.log'.format(testlist,testname, test_iter, rand_seed)
+            loginfo = '{}_{}_rpt{}_{}'.format(testlist,testname, test_iter, rand_seed)
+        else:
+            #logfile = ' -l run/{}_{}_rpt{}_{}.log'.format(kwargs['test_name'],testname, test_iter, rand_seed)
+            logfile = ' -l run/{}_{}_rpt{}_{}.log'.format(testlist,testname, test_iter, rand_seed)
+            loginfo = '{}_{}_rpt{}_{}'.format(testlist,testname, test_iter, rand_seed)
+        if args.dump == 1:
+            if args.seperate == 1:
+                #waveformfile = '{}_{}_rpt{}_{}'.format(kwargs['test_name'],testname, test_iter, rand_seed)
+                waveformfile = '{}_{}_rpt{}_{}'.format(testlist,testname, test_iter, rand_seed)
+            else:
+                #waveformfile = 'run/{}_{}_rpt{}_{}'.format(kwargs['test_name'],testname, test_iter, rand_seed)
+                waveformfile = 'run/{}_{}_rpt{}_{}'.format(testlist,testname, test_iter, rand_seed)
+            if args.waveform_viewer == 'ms':
+                sim_wave =  '-wlf {wavefile}.wlf '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vz':
+                sim_wave = '-qwavedb=+wavefile={wavefile}.db '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vd':
+                sim_wave = '+fsdbfile+{wavefile}.fsdb '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vp':
+                sim_wave = '+vpdfile+{wavefile}.vpd '.format(wavefile=waveformfile)
+            elif args.waveform_viewer == 'vc':
+                sim_wave = '-vcd {wavefile}.vcd '.format(wavefile=waveformfile)
+    else:
+        logger.error("please specify either test_name or outfile for log/dump file name ")
+    if module=="dcs":
+        sim_cmd = sim_cmd + " +uvm_set_config_string="+"uvm_test_top."+module+"_cfg,loginfo,"+loginfo
+
+    logger.debug("cov: " + str(args.cov))
+    if args.cov:
+        if args.toolname == 'vcs':
+            sim_cmd = sim_cmd + ' -cm_dir ./vcs_cov_data/{}_{}_{}.vdb'.format(testname, test_iter, rand_seed)
+        else:
+            sim_cmd = sim_cmd + ' -testname {}_{}_{}_{}'.format(testlist,testname, test_iter, rand_seed)
+    sim_cmd = sim_cmd + ' {} '.format(logfile) + ' {} '.format(sim_wave)
+
+    # waveformstart
+    if args.waveform_viewer == 'ms':
+        sim_cmd = sim_cmd + ''
+    elif args.waveform_viewer == 'vz':
+        sim_cmd = sim_cmd + ' +qwavedb_dump_start+{} '.format(args.waveformstart)
+
+    # profile
+    if args.toolname == 'mti' and args.profile_cpu != None:
+        sim_cmd = sim_cmd + ' -autoprofile={file_name}.pdb'.format(file_name=args.profile_cpu)
+    elif args.toolname == 'vcs' and args.profile_cpu != None:
+        sim_cmd = sim_cmd + ' -simprofile time '
+
+    # extra run args
+    if args.extra_run_arg != None:
+        sim_cmd = sim_cmd + ' {}'.format(args.extra_run_arg)
+
+    #logger.debug("vcs_cmd: " + vcs_cmd)
+    logger.debug("sim_cmd: " + sim_cmd)
+
+    ## get full vsim cme
+    #print("[FULL VSIM CMD] sim_cmd = {}".format(sim_cmd))
+    #sys.stdout.flush()
+    #print(vcs_cmd)
+    #print(sim_cmd)
+    if 'pre_sim' in kwargs.keys():
+        pre_sim_cmd_list = kwargs['pre_sim'].split('\n')
+        for pre_sim_cmd in pre_sim_cmd_list:
+           
+            print ("\n[EXEC] " + pre_sim_cmd)
+            retcode = call(pre_sim_cmd, shell=True)
+            if(retcode):
+                print (CRED + "\n[ERROR] pre_sim command failed\n" + CEND)
+                sys.exit(1)
+
+    c_cmd = 'make -C ../../firmware all '
+
+    if 'bl1_test' in kwargs.keys():
+        c_cmd = c_cmd + 'BINFILE={} '.format(kwargs['bl1_test'])
+        retcode = call(c_cmd, shell=True)
+        if(retcode):
+            print (CRED + "\n[ERROR] BL1 Compilation failed\n" + c_cmd + CEND)
+            sys.exit(1)
+    elif 'ctest' in kwargs.keys():
+        c_cmd = c_cmd + 'TESTCASE={} '.format(kwargs['ctest'])
+        retcode = call(c_cmd, shell=True)
+        if(retcode):
+            print (CRED + "\n[ERROR] C/ASM Compilation failed\n" + c_cmd + CEND)
+            sys.exit(1)
+    if args.ge:
+        if args.toolname == "mti": 
+            sub_cmd = sub_cmd + "-l msimhdlsim=1 "
+        else:
+            sub_cmd = sub_cmd + "-l VCSRuntime_Net=1 "
+        proc=Popen(sub_cmd+sim_cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+        jc = 'dead'
+        for line in proc.stdout:
+            logger.info(line.decode('utf-8'))
+            m = re.search('Your job (.*) \(.*',line.decode('utf-8'))
+            if m: jc = m.group(1)
+
+        proc.wait()
+    elif args.ige:
+        sub_cmd = "qrsh -V -cwd -noshell -now no -verbose "
+        if args.toolname == "mti": 
+            sub_cmd = sub_cmd + "-l msimhdlsim=1 "
+        else: 
+            sub_cmd = sub_cmd + "-l VCSRuntime_Net=1 "
+        logger.info("Full cmd : "+sub_cmd+sim_cmd)
+        proc=Popen(sub_cmd+sim_cmd, stdout=PIPE, stderr=STDOUT, shell=True)
+        for line in proc.stdout: logger.info(line.decode('utf-8').strip())
+        proc.wait()
+    else:
+        call(sim_cmd, shell=True)
+    if 'post_sim' in kwargs.keys():
+        post_sim_cmd_list = kwargs['post_sim'].split('\n')
+        for post_sim_cmd in post_sim_cmd_list:
+           
+            print ("\n[EXEC] " + post_sim_cmd)
+            retcode = call(post_sim_cmd, shell=True)
+            if(retcode):
+                print (CRED + "\n[ERROR] post_sim command failed\n" + CEND)
+                sys.exit(1)
+    if args.seperate == 1:
+        change_back_dir()
+    logname='{}_{}_rpt{}_{}'.format(testlist,testname, test_iter, rand_seed)
+    if args.ge:
+        p=Popen("qstat |grep " + jc, stdout=PIPE, universal_newlines=True, shell=True)
+        job_l_jc[job_l_ind]=jc
+        job_l_testlist[job_l_ind]=testlist
+        job_l_testname[job_l_ind]=testname
+        job_l_total_test_num[job_l_ind]=total_test_num
+        job_l_simulation_times[job_l_ind]=simulation_times
+        job_l_logname[job_l_ind]=logname
+        job_l_ind+=1
+        return jc
+    else:
+        endtime=time.time()
+        if (endtime-starttime) > (3600*24):
+            runtime="{:.3f}".format((endtime-starttime)/(3600*24))
+            runtime_str=str(runtime)+' day'
+        elif (endtime-starttime) > 3600:
+            runtime="{:.3f}".format((endtime-starttime)/3600)
+            runtime_str=str(runtime)+' hour'
+        else:
+            runtime="{:.3f}".format((endtime-starttime)/60)
+            runtime_str=str(runtime)+' min'
+        regresslog.write('{:31}  {:8}  {:<10}  {:<10}  {:40} {:10} {:10}'.format(testlist,testname,total_test_num,simulation_times,logname,'0',runtime_str))
+        regresslog.write('\n')
+        return 1
+
+# =========================================================
+
+if __name__ == '__main__':
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+    CRED = '\033[41m'
+    CEND = '\033[0m'
+    job_l = [] 
+    logging.basicConfig(filename='simrun.log',
+                        filemode='w',
+                       # level=logging.INFO,
+                        level=logging.DEBUG,
+                        format='%(levelname)s:%(asctime)s:%(message)s')
+    logger = logging.getLogger('simrun logger')
+    
+    logFormatter = logging.Formatter('%(levelname)s:%(asctime)s:%(message)s')
+
+    fileHandler = logging.FileHandler("./simrun.log")
+    fileHandler.setFormatter(logFormatter)
+    logger.addHandler(fileHandler)
+
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setFormatter(logFormatter)
+    logger.addHandler(consoleHandler)
+
+    arg_parser = argparse.ArgumentParser(
+        description = __doc__,
+        #formatter_class = argparse.RawDescriptionHelpFormatter,
+        formatter_class = argparse.ArgumentDefaultsHelpFormatter,
+        prefix_chars ='-+',
+        add_help = True
+    )
+    arg_parser.add_argument('-cfg', dest="config_file", default=["compile_sim.cfg.asic"], nargs="+", type=str, help="config file")
+    arg_parser.add_argument('-compile', dest="compilation_sel", default="all", choices={"all", "rtl_only", "tb_only", "skip"}, type=str, help="compilation options")
+    arg_parser.add_argument('-testlist', dest="testlists", default=["base_test_list"], nargs="+", type=str, help="regression list")
+    arg_parser.add_argument('-test', dest="tests", default=[], nargs="+", type=int, help="specify tests in a certain section, starts from 1")
+    arg_parser.add_argument('-rpt', dest="rpts", default=[], nargs="+", type=int, help="specify repeat number of each test in test arg provided")
+    arg_parser.add_argument('-seed', dest="seeds", default=[], nargs="+", type=int, help="seed for a specific test")
+    arg_parser.add_argument('-dump', dest="dump", default=0, choices={0, 1}, type=int, help="enable waveform dump")
+    arg_parser.add_argument('-dumpctrl', dest="dumpctrl", default=None, type=str, help="pass waveform dumpctrl file to dump specific hierarchy for vz")
+    arg_parser.add_argument('-dumpmem', dest="dumpmem", default=1, choices={0, 1}, type=int, help="dump memory in design. Default on for vz")
+    arg_parser.add_argument('-dumpstart', dest="waveformstart", default="0us", type=str, help="dump waveform after specific time")
+    arg_parser.add_argument('-outfile', dest="outfile", default=None, type=str, help="generate log or dump with specified file name")
+    arg_parser.add_argument('-wave', dest="waveform_viewer", default="vz", choices={"ms", "vz", "vd", "vp" , "vc"}, type=str, help="waveform viewer option")
+    arg_parser.add_argument('-xprop', dest="xprop", default=0, choices={0, 1}, type=int, help="choose to run xprop or not, default off")
+    arg_parser.add_argument('-profile_cpu', dest="profile_cpu", default=None, type=str, help="generate simulation time profile database with specified file name")
+    arg_parser.add_argument('-profile_type', dest="profile_type", default="time", choices={"time", "mem"}, type=str, help="vcs profile type(time or mem)")
+    arg_parser.add_argument('-v', dest="verbosity", default="low", choices={"none", "low", "medium", "high", "debug"}, type=str, help="select UVM_VERBOSITY")
+    arg_parser.add_argument('-nand', dest="nand", default=None, choices={"mu_b17a", "mu_b27a", "mu_n28a", "tsb_bics3", "tsb_bics4"}, type=str, help="specify nand_model")
+    arg_parser.add_argument('-cov', help='Enable coverage collection for cov_opt in cfg', required=False, action='store_true')
+    arg_parser.add_argument('+def', dest="extra_define", default=None, type=str, help="extra compile defines, e.g. \"\\+define\\+C_TEST\"")
+    arg_parser.add_argument('+run_arg', dest="extra_run_arg", default=None, type=str, help="extra run args")
+    arg_parser.add_argument('-sep', dest="seperate", default=0, choices={0,1}, type=int, help="every run case keep sim data in their own dir,this parameter can't run multi cases at the same time")
+    arg_parser.add_argument('-sepcompile', dest="seperatecompile", default=1, choices={0,1}, type=int, help="every run case keep compile data in their own dir,this parameter can run multi cases at the same time")
+    arg_parser.add_argument('-debug_mode', dest="debug_mode", default=0, choices={0,1}, type=int, help="debug mode,if 1,don't generate orginal file any more")
+    arg_parser.add_argument('-sys_clk', dest="sys_clk", default="800m", choices={"800m","600m","400m"}, type=str, help="sys_clk frequency config")
+    arg_parser.add_argument('-rptno', dest="rptno", default=1000, type=int, help="assign which rptno to run")
+    arg_parser.add_argument('-make', dest="make", default=0, type=int, help="make software script")
+    arg_parser.add_argument('-mkdir_build', dest="mkdir_build", default=1, type=int, help="mkdir build dir to data_gen")
+    arg_parser.add_argument('-clean', dest="clean", default=0, choices={0,1}, type=int, help="if 1,remove the result dir")
+    arg_parser.add_argument('-jenkin', dest="jenkin", default=1, choices={0,1}, type=int, help="jenkin mode,no rerun with wave when error")
+    arg_parser.add_argument('-delay', dest="delay", default=0, choices={0,1}, type=int, help="random axi delay")
+    arg_parser.add_argument('-offset', dest="offset", default=[], nargs="+", type=int, help="offset for stop resume")
+    arg_parser.add_argument('-no_assertion', dest="no_assertion", default=0, choices={0,1}, type=int, help="no assertion check")
+    arg_parser.add_argument('-all_deposit', dest="all_deposit", default=0, choices={0,1}, type=int, help="with all deposit file to do GLS")
+    arg_parser.add_argument('-more_pkt_num', dest="more_pkt_num", default=0, type=int, help="config more pkt_num")
+    arg_parser.add_argument('-performance', dest="performance", default=0, choices={0,1}, type=int, help="performance mode")
+    arg_parser.add_argument('-ratio', dest="ratio", default=None, type=str, help="2.0")
+    arg_parser.add_argument('-ns_unit', dest="ns_unit", default=1, choices={0,1}, type=int, help="0:ps unit 1:ns unit")
+    arg_parser.add_argument('-tcl', dest="tclscr", default=None, type=str, help="TCL Script")
+    arg_parser.add_argument('-tool', dest="toolname", default="mti", choices={"mti", "vcs"}, type=str, help="Simulator Tool")
+    arg_parser.add_argument('-initmem', dest="initmem", default=0, choices={0,1}, type=int, help="init zebu memory 0,broadcomm memory can't initial")
+    arg_parser.add_argument('-ge', help='Enable Grid Engine', required=False, action='store_true')
+    arg_parser.add_argument('-ige', help='Enable Grid Engine in interactive mode', required=False, action='store_true')
+    arg_parser.add_argument('-njobs', dest="n_jobs", default=2000, type=int, help="Number of parallel jobs launched", required=False)
+    arg_parser.add_argument('+gargs', dest="gargs", default="", type=str, help="Pass extra grid engine args", required=False)
+    arg_parser.add_argument('-test_num', help='statistics test_num', required=False, action='store_true')
+    arg_parser.add_argument('-quit_count', dest="quit_count", default=0, type=int, help="+UVM_MAX_QUIT_COUNT", required=False)
+    simdir = os.getcwd()
+    logger.debug("simdir="+str(simdir))
+    matchmodule = re.match('.*/(\w+)/sim',simdir)
+    module = matchmodule.group(1)
+    logger.debug("module="+str(module));
+    args = arg_parser.parse_args()
+    #for k, v in vars(args):
+    #    logger.debug("args: " + k + " " + v)
+    if args.testlists == []:
+        logger.error("testlists can't be empty!");
+
+    if args.verbosity == 'debug': logger.setLevel(logging.DEBUG)
+    if args.config_file:
+        cfg_parser = configparser.SafeConfigParser()
+        cfg_parser.optionxform = str
+        logger.debug(args.config_file)
+        if args.toolname == "mti":
+            if "compile_sim.cfg" not in args.config_file:
+                cfg_parser.read("compile_sim.cfg")
+        else: 
+            if "compile_sim_vcs.cfg" not in args.config_file:
+                cfg_parser.read("compile_sim_vcs.cfg")
+        for cfg_f in args.config_file:
+            cfg_parser.read(cfg_f)
+        defaults = cfg_parser.defaults()
+        if(cfg_parser.has_section('prerun')):
+            prerun_sec = cfg_parser._sections['prerun']
+        else:
+            prerun_sec = {}
+        if(cfg_parser.has_section('mode')):
+            mode_sec = cfg_parser._sections['mode']
+        else:
+            mode_sec = {}
+        if(cfg_parser.has_section('libcomp')):
+            lib_sec = cfg_parser._sections['libcomp']
+        else:
+            lib_sec = {}
+        if(cfg_parser.has_section('dutcomp')):
+            dut_sec = cfg_parser._sections['dutcomp']
+        if(cfg_parser.has_section('nandcomp')):
+            nand_sec = cfg_parser._sections['nandcomp']
+        else:
+            nand_sec = {}
+        if(cfg_parser.has_section('cmodelcomp')):
+            cmodel_sec = cfg_parser._sections['cmodelcomp']
+        else:
+            cmodel_sec = {}
+        if(cfg_parser.has_section('tbcomp')):
+            tb_sec = cfg_parser._sections['tbcomp']
+        if(cfg_parser.has_section('sim')):
+            sim_sec = cfg_parser._sections['sim']
+
+    #------------------------------------------------------
+    # override config file value with cmd line argument
+    #------------------------------------------------------
+    # override mode from command line
+    if ('NAND_MODE' in mode_sec):
+        logger.debug("NAND_MODE: " +  cfg_parser.get('mode', 'NAND_MODE'))
+        if args.nand != None:
+            cfg_parser.set('mode', 'NAND_MODE', args.nand)
+
+    # update tb_include_dir
+    tb_include_dir = get_tb_incdir(**defaults)
+    cfg_parser.set('DEFAULT', '$TB_INCDIR', tb_include_dir)
+
+    # update vlog option based on selected mode
+    vlog_option = defaults['$COMPILE_DEFINES']
+    vlog_option = vlog_option+get_vlog_option(**mode_sec)
+    logger.debug("vlog_option="+vlog_option)
+    if args.no_assertion == 1:
+        vlog_option=vlog_option+"+define+NO_ASSERTION"
+        logger.debug("vlog_option="+vlog_option)
+    if args.all_deposit == 1:
+        vlog_option=vlog_option+"+define+ALL_DEPOSIT"
+        logger.debug("vlog_option="+vlog_option)
+    cfg_parser.set('DEFAULT', '$COMPILE_DEFINES', vlog_option)
+    logger.debug(cfg_parser.get('DEFAULT', '$COMPILE_DEFINES'))
+    logger.debug(cfg_parser.sections())
+    with open("merged_sim.cfg", "w") as cfg_f:
+        cfg_parser.write(cfg_f)
+
+    #------------------------------------------------------
+    # setup
+    #------------------------------------------------------
+    # need to run specific commands before compilation
+
+    #------------------------------------------------------
+    # compile
+    #------------------------------------------------------
+    vcs_compile_cmd = 'vlogan'
+    vcs_compile_cmd = vcs_compile_cmd + ' -kdb -debug_access+r '
+    if args.seperatecompile == 1:   
+        args.seperate=1
+
+    seed_array=[0 for x in range(0,2000)]
+    test_name_array=["" for x in range(0,2000)]
+    job_l_start_time = [0 for x in range(0,2000)] 
+    job_l_start_time_no = [0 for x in range(0,2000)] 
+    job_l_wait_start_time = [0 for x in range(0,2000)] 
+    job_l_wait_start_time_no = [0 for x in range(0,2000)] 
+    job_l_end_time = [0 for x in range(0,2000)] 
+    job_l_jc = [0 for x in range(0,2000)] 
+    job_l_testlist=["" for x in range(0,2000)]
+    job_l_testname=["" for x in range(0,2000)]
+    job_l_total_test_num=[0 for x in range(0,2000)]
+    job_l_simulation_times=[0 for x in range(0,2000)]
+    job_l_logname=["" for x in range(0,2000)]
+    job_l_runtime_str=["" for x in range(0,2000)]
+    job_l_wait_time_str=["" for x in range(0,2000)]
+    job_l_index=0
+    job_l_ind=0
+    seed_array_size=0
+    simulation_times=0
+    total_test_num=0
+    total_waittime=0;
+    # need to compile all at the very beginning
+    args_ori=copy.deepcopy(args)
+    if args.compilation_sel == 'skip':    # skip compile
+        logger.info("Skip Compilation ... ")
+        args.seperatecompile=0;
+        k=0
+        for testlist in args.testlists:
+            print("testlist=",testlist)
+            lst_parser = configparser.SafeConfigParser()
+            lst_parser.optionxform = str
+            lst_parser.read(testlist)
+            base = lst_parser._sections['base']
+            tests_list = lst_parser.sections()
+            tests_list.remove('base')
+            if not args.tests:
+                for item in tests_list:
+                    testname=item
+                    test = lst_parser._sections[item]
+                    merge_sections(test, **base)
+                    seed = 0 if not args.seeds else args.seeds.pop(0)
+                    if 'rpt' in test:
+                        rpt_num=int(test['rpt'])
+                    else:
+                        rpt_num=1
+                    for test_iter in range(rpt_num):
+                        rand_seed = random.randrange(0, 1000000) if seed==0 else seed
+                        seed_array[k]=rand_seed
+                        k=k+1
+                seed_array_size=k
+            else:
+                seed_array[0]=args.seeds.pop(0)
+                seed_array_size=1
+        com_arg = prepare_sim_arg(args, **sim_sec)
+    else :
+        call('rm compile.log', shell=True)
+        if args.compilation_sel == 'all':
+            call('rm *.so -f', shell=True)
+            args1=copy.deepcopy(args_ori)
+            prerun(args1, **prerun_sec)
+            if lib_sec != {}:
+                compile_lib(args, **lib_sec)            # map libraries 
+            if cmodel_sec != {}:
+                compile_func(args, defaults, cmodel_sec) # compile cmodel
+        com_arg = prepare_sim_arg(args, **sim_sec)
+        if args.compilation_sel == 'all' or args.compilation_sel == 'rtl_only':
+            compile_sim_func(args, defaults, dut_sec, args.extra_define, com_arg, **sim_sec)
+            logger.info("dutcomp section is compiled ... ")
+            if nand_sec != {}:
+                compile_nand(args, mode_sec['NAND_MODE'], defaults, nand_sec) # compile nand model
+                logger.info("nandcomp section is compiled ... ")
+        if args.compilation_sel == 'all' or args.compilation_sel == 'tb_only':
+            compile_sim_func(args, defaults, tb_sec, args.extra_define, com_arg, **sim_sec)
+            logger.info("tbcomp section is compiled ... ")
+
+    #------------------------------------------------------
+    # simulation
+    #------------------------------------------------------
+    test_num=0
+    every_test_num=0
+    if args.testlists != []:
+        # get common arg in cmd line
+        logger.info("args.dump " + str(args.dump) + " args.waveform_viewer " + args.waveform_viewer)
+        logger.info("args.testlists="+str(args.testlists))
+        logger.info("time="+str(time.time()))
+        regresslog=open(simdir+"/"+"regress"+str(time.time())+".log","w")
+        regresslog.write('{:31}  {:8}  {:10}  {:10}  {:40} {:10} {:10}'.format('testlist','testname','total_test','total_run','logname','waittime','usetime'))
+        regresslog.write('\n')
+        for testlist in args.testlists:
+            every_test_num=0
+            total_starttime=time.time()
+            logger.info("running testlist: " + testlist)
+            lst_parser = configparser.SafeConfigParser()
+            lst_parser.optionxform = str
+            lst_parser.read(testlist)
+            base = lst_parser._sections['base']
+            tests_list = lst_parser.sections()
+            tests_list.remove('base')
+            #if (lst_parser.has_section('setup')):
+            #   tests_list.remove('setup')
+            if not args.tests:
+                # run all sections/tests if no section is specified
+                for item in tests_list:
+                    test_num=test_num+1
+                    every_test_num=every_test_num+1
+                    error_flag=0
+                    rerun=0
+                    error_array=[]
+                    test = lst_parser._sections[item]
+                    merge_sections(test, **base)
+                    for k, v in test.items():
+                        logger.debug("test after: " + k+" " + v)
+                    
+                    seed = 0 if not args.seeds else args.seeds.pop(0)
+                    if 'norun' in test:
+                        norun=int(test['norun'])
+                    else:
+                        norun=0
+                    logger.debug("norun=" + str(norun))
+                    if args.rpts:
+                        rpt_num=args.rpts.pop(0)
+                        if not args.rpts:
+                            args.rpts.append(rpt_num)
+                    else:
+                        if 'rpt' in test:
+                            rpt_num=int(test['rpt'])
+                        else:
+                            rpt_num=1
+                    if norun==0 and not args.test_num:
+                        for test_iter in range(rpt_num):
+                            if args.ge and (len(job_l) == args.n_jobs): wait_end(args,1) 
+                            job_l.append(simulation(testlist, item, test_iter, args, rpt_num, seed, args.verbosity, rerun, error_array, com_arg, **test))
+                        #if find UVM_ERROR,rerun with dump 1
+                        for test_iter in range(rpt_num):
+                            rseed=seed_array[simulation_times-rpt_num+test_iter]
+                            if args.seperate == 1:
+                                testdir = os.getcwd()+'/run/{}_{}_rpt{}_{}'.format(testlist, item, test_iter, rseed)
+                                bb_fatal=os.system('grep "UVM_FATAL :    0" '+format(testdir)+' -r -w --color')
+                                bb=os.system('grep "UVM_ERROR :    0" '+format(testdir)+' -r -w --color')
+                                logger.debug("bb="+str(bb));
+                                logger.debug("bb_fatal="+str(bb_fatal));
+                                if bb == 256 or bb_fatal == 256:
+                                    error_flag=1
+                                    rerun=1
+                                    error_array.append(1)
+                                    error_array[test_iter]=1
+                                else:
+                                    error_array.append(1)
+                                    error_array[test_iter]=0
+
+                        if error_flag == 1 and args.jenkin == 0:
+                            logger.debug("error_array="+str(error_array));
+                            args1=copy.deepcopy(args_ori)
+                            args1.dump=1
+                            com_arg1 = prepare_sim_arg(args1, **sim_sec)
+                            simulation_times=simulation_times-rpt_num
+                            if args_ori.dump == 0:
+                                for test_iter in range(rpt_num):
+                                    if args.ge and (len(job_l) == args.n_jobs): wait_end(args,1) 
+                                    job_l.append(simulation(testlist, item, test_iter, args1, rpt_num, seed, args1.verbosity, rerun, error_array, com_arg1, **test))
+            else:
+                for test_id in args.tests:
+                    error_flag=0
+                    rerun=0
+                    error_array=[]
+                    testname = 'test_{}'.format(int(test_id))
+                    test = lst_parser._sections[testname]
+                    merge_sections(test, **base)
+                    for k, v in test.items():
+                        logger.debug("test after: " + k + " " + v)
+                    rpt_num = 1 if not args.rpts else args.rpts.pop(0)
+                    seed = 0 if not args.seeds else args.seeds.pop(0)
+                    logger.debug("rpt_num="+str(rpt_num));
+                    logger.debug("seed="+str(seed));
+                    for test_iter in range(rpt_num):
+                        if args.rptno == test_iter:
+                            error_array.append(1)
+                            error_array[test_iter]=1
+                        else:
+                            error_array.append(1)
+                            error_array[test_iter]=0
+                        if args.rptno != 1000:
+                            rerun=1
+                    for test_iter in range(rpt_num):
+                        if args.ge and (len(job_l) == args.n_jobs): wait_end(args,1) 
+                        job_l.append(simulation(testlist, testname, test_iter, args, rpt_num, seed, args.verbosity, rerun, error_array, com_arg, **test))
+                    error_flag=0
+                    rerun=0
+                    error_array=[]
+                    #if find UVM_ERROR,rerun with dump 1
+                    for test_iter in range(rpt_num):
+                        rseed=seed_array[simulation_times-rpt_num+test_iter]
+                        if args.seperate == 1:
+                            testdir = os.getcwd()+'/run/{}_{}_rpt{}_{}'.format(testlist, testname, test_iter, rseed)
+                            bb_fatal=os.system('grep "UVM_FATAL :    0" '+format(testdir)+' -r -w --color')
+                            bb=os.system('grep "UVM_ERROR :    0" '+format(testdir)+' -r -w --color')
+                            logger.debug("bb="+str(bb));
+                            logger.debug("bb_fatal="+str(bb_fatal));
+                            if bb == 256 or bb_fatal == 256:
+                                error_flag=1
+                                rerun=1
+                                error_array.append(1)
+                                error_array[test_iter]=1
+                            else:
+                                error_array.append(1)
+                                error_array[test_iter]=0
+                              
+                    if error_flag == 1 and args.jenkin == 0:
+                        args1=copy.deepcopy(args_ori)
+                        args1.dump=1
+                        com_arg1 = prepare_sim_arg(args1, **sim_sec)
+                        simulation_times=simulation_times-rpt_num
+                        logger.debug("256 seed="+str(seed));
+                        if args_ori.dump == 0:
+                            for test_iter in range(rpt_num):
+                                if args.ge and (len(job_l) == args.n_jobs): wait_end(args,1) 
+                                job_l.append(simulation(testlist, testname, test_iter, args1, rpt_num, seed, args1.verbosity, rerun, error_array, com_arg1, **test))
+            if args.test_num:
+                print(testlist," test_num is ",every_test_num)
+        if args.ge:
+            wait_end(args,len(job_l))
+            
+            logger.info("All jobs completed...")
+            if args.verbosity != 'debug':
+                #call('rm sim*.sh', shell=True)
+                call('rm -rf ./tmp*', shell=True)
+
+        total_endtime=time.time()
+        if (total_endtime-total_starttime) > (3600*24):
+            total_runtime="{:.3f}".format((total_endtime-total_starttime)/(3600*24))
+            total_runtime_str=str(total_runtime)+' day'
+        elif (total_endtime-total_starttime) > 3600:
+            total_runtime="{:.3f}".format((total_endtime-total_starttime)/3600)
+            total_runtime_str=str(total_runtime)+' hour'
+        else:
+            total_runtime="{:.3f}".format((total_endtime-total_starttime)/60)
+            total_runtime_str=str(total_runtime)+' min'
+        
+        if args.ge:
+            if total_waittime > (3600*24):
+                total_wait_time="{:.3f}".format(total_waittime/(3600*24))
+                total_wait_time_str=str(total_wait_time)+' day'
+            elif total_waittime > 3600:
+                total_wait_time="{:.3f}".format(total_waittime/3600)
+                total_wait_time_str=str(total_wait_time)+' hour'
+            else:
+                total_wait_time="{:.3f}".format(total_waittime/60)
+                total_wait_time_str=str(total_wait_time)+' min'
+        else:
+            total_wait_time_str='0'
+
+        regresslog.write('{:31}  {:8}  {:<10}  {:<10}  {:40} {:10} {:10}'.format('total_time','',total_test_num,simulation_times,'',total_wait_time_str,total_runtime_str))
+        regresslog.close()
+    if args.test_num:
+        print("total test_num is ",test_num)
+
